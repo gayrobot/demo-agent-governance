@@ -1,0 +1,19 @@
+# Secrets: nothing in this repo needs a key. Ignored anyway, so one can never be
+# committed by accident.
+.env
+.env.*
+!.env.tpl
+.dev.vars
+.dev.vars*
+
+# Run logs and replays (never committed)
+logs/
+*.jsonl
+
+# Node
+node_modules/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

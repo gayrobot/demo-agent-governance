@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./.env.dev)",
+      "Read(./.env.prod)",
+      "Read(**/.dev.vars)",
+      "Read(**/.dev.vars*)",
+      "Bash(op read:*)",
+      "Bash(op item get:*)",
+      "Bash(op inject:*)",
+      "Bash(printenv:*)",
+      "Bash(cat .env:*)",
+      "Bash(cat .dev.vars:*)",
+      "Bash(wrangler secret get:*)"
+    ]
+  }
+}

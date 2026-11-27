@@ -1,0 +1,12 @@
+# Install once per clone: pre-commit install
+# Scans the staged diff with the locally installed gitleaks (brew install gitleaks).
+# A local hook so pre-commit doesn't pass filenames, which `gitleaks git` rejects.
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (staged changes)
+        entry: gitleaks git --pre-commit --staged --redact --no-banner
+        language: system
+        pass_filenames: false
+        always_run: true
