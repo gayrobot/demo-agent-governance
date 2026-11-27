@@ -59,19 +59,26 @@ test("no file under src/ reads the clock, uses timers, reaches the network or im
   assert.deepEqual(found, []);
 });
 
-test("no file in src/, test/ or the docs names an address outside example.test", () => {
+/** Domains reserved for examples (RFC 2606, RFC 6761). None can belong to a real person. */
+const RESERVED = /^(example\.(com|net|org)|[a-z0-9.-]+\.(invalid|example))$/;
+
+test("no file names a real address: example.test only, plus reserved domains as attack inputs in tests", () => {
   const root = fileURLToPath(new URL("../", import.meta.url));
-  const scanned = [
+  const strict = [
     ...files(SRC),
-    ...files(join(root, "test")),
     ...files(join(root, "docs")),
     join(root, "README.md"),
     join(root, "CLAUDE.md"),
   ];
+  const tests = files(join(root, "test"));
   const bad: string[] = [];
-  for (const file of scanned) {
+  for (const file of [...strict, ...tests]) {
     for (const e of readFileSync(file, "utf8").match(EMAIL) ?? []) {
-      if (!e.endsWith("@example.test")) bad.push(`${file.slice(root.length)}: ${e}`);
+      const domain = (e.split("@")[1] ?? "").toLowerCase();
+      if (domain === "example.test") continue;
+      // A test may plant a wrong-domain or wrong-case address to prove it's refused.
+      if (tests.includes(file) && RESERVED.test(domain)) continue;
+      bad.push(`${file.slice(root.length)}: ${e}`);
     }
   }
   assert.deepEqual(bad, []);
