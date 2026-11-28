@@ -9,6 +9,7 @@
  * approve it, which grant a call needs, and whether the requester may still act. The
  * gate fixes the order, so no caller can skip a step:
  *
+ * 0. A call with no grant defined is refused before anything else (`grantFor`).
  * 1. A write the requester may not ask for is refused (`mayRequest`).
  * 2. The caller's own check runs (`check`), if it gave one.
  * 3. A write that none of this call's approvers may approve is refused before anyone is
@@ -17,7 +18,8 @@
  *    approver sees is what runs. The approval counts only from a signed-in approver for
  *    this call who still passes `mayApprove` once they've answered.
  * 5. The gate signs a receipt over exactly what was approved, and records the approval
- *    before acting. If the audit sink rejects, nothing runs.
+ *    (with the requester and the ref) before acting. If the audit sink rejects, nothing
+ *    runs.
  * 6. A fresh delegated token for exactly this call, verified by the handler side
  *    (`runWithGrant`) before the tool runs.
  *
@@ -34,6 +36,7 @@ import {
   type CallKind,
   GrantError,
   type HandlerChecks,
+  type NeededGrant,
   neededGrant,
   runWithGrant,
 } from "./delegation.ts";
@@ -60,8 +63,9 @@ export interface Proposal {
 }
 
 /**
- * Resolves to `true` (one approver for the call) or an `ApprovedBy` (several) to
- * approve. Any other value, a rejection or a throw is not an approval.
+ * Resolves to `true` (when the call has exactly one approver) or an `ApprovedBy` naming
+ * one of the call's approvers, to approve. Any other value, a rejection or a throw is
+ * not an approval.
  */
 export type Approver = (proposal: Proposal) => Promise<unknown> | unknown;
 
@@ -69,8 +73,9 @@ export type Approver = (proposal: Proposal) => Promise<unknown> | unknown;
 export const denyAll: Approver = async () => false;
 
 /**
- * Names which of the call's approvers answered, when there are several and which one is
- * known only when they answer. Honoured only if that sign-in is one of them.
+ * Names which of the call's approvers answered: needed when there are several, and
+ * useful when an approval was decided earlier and looked up at call time. Honoured only
+ * if that very sign-in is one of the call's approvers.
  */
 export class ApprovedBy {
   readonly approver: SignIn;
@@ -81,8 +86,9 @@ export class ApprovedBy {
 }
 
 /**
- * Who answers a write: one sign-in (a plain `true` approves), several (only an
- * `ApprovedBy` naming one of them approves), or nobody (no approval is honoured).
+ * Who answers a write: one sign-in (`true` or an `ApprovedBy` naming it approves),
+ * several (only an `ApprovedBy` naming one of them approves), or nobody (no approval is
+ * honoured).
  */
 export type Approvers = SignIn | readonly SignIn[] | null;
 
@@ -210,6 +216,14 @@ export class ApprovalGate {
       ({ status: "refused", approval: "not_asked", reason }) as const;
     const denied = (reason: string) => ({ status: "denied", approval: "denied", reason }) as const;
 
+    // 0. A call with no grant defined goes no further: nobody is asked to approve it.
+    let needed: NeededGrant;
+    try {
+      needed = neededGrant(rules, call);
+    } catch (exc) {
+      return exc instanceof GrantError ? failed(exc, Approval.NOT_ASKED) : threw("rules", exc);
+    }
+
     // 1. May this requester ask for this write at all?
     let approvers: Approvers = null;
     if (write) {
@@ -236,17 +250,17 @@ export class ApprovalGate {
     let proof: { token: string; authority: ReceiptAuthority } | null = null;
     if (write) {
       // 3. Refused before the prompt when nobody who could answer may approve it.
-      const candidates: readonly unknown[] =
+      const listed: unknown =
         approvers === null ? [] : SignIn.is(approvers) ? [approvers] : approvers;
-      if (!Array.isArray(candidates) || !candidates.every((a) => SignIn.is(a))) {
+      if (!Array.isArray(listed) || !listed.every((a) => SignIn.is(a))) {
         return threw("rules", new TypeError("every approver must be a SignIn from an issuer"));
       }
+      // The approvers as they stood before the prompt: changing the list later changes nothing.
+      const candidates: readonly SignIn[] = Object.freeze([...listed]);
       if (approvers !== null) {
         let refusals: (string | null)[];
         try {
-          refusals = (candidates as readonly SignIn[]).map((a) =>
-            rules.mayApprove(a.principal.sub, requester, call),
-          );
+          refusals = candidates.map((a) => rules.mayApprove(a.principal.sub, requester, call));
         } catch (exc) {
           return threw("rules", exc);
         }
@@ -278,10 +292,11 @@ export class ApprovalGate {
       }
       let approvedBy: SignIn | null;
       if (answer instanceof ApprovedBy) {
-        approvedBy =
-          Array.isArray(approvers) && approvers.includes(answer.approver) ? answer.approver : null;
+        // Only this call's own approvers, by the sign-in itself: an equal copy doesn't count.
+        approvedBy = candidates.includes(answer.approver) ? answer.approver : null;
       } else if (answer === true) {
-        approvedBy = SignIn.is(approvers) ? approvers : null;
+        approvedBy =
+          SignIn.is(approvers) && candidates.length === 1 ? (candidates[0] ?? null) : null;
       } else {
         return denied("the approver did not approve");
       }
@@ -312,6 +327,8 @@ export class ApprovalGate {
       approval = Approval.APPROVED;
       await this.#audit.record("write_approved", {
         ...request.auditFields,
+        requester,
+        ref: call.ref,
         tool: call.tool,
         args: call.args,
         effect: proposal.description,
@@ -323,15 +340,12 @@ export class ApprovalGate {
     // 6. A fresh delegated token for exactly this call, checked by the handler side.
     let token: string;
     try {
-      const needed = neededGrant(rules, call);
-      try {
-        token = await this.#signIn.grant(needed.audience, needed.scope, call.ref);
-      } catch (exc) {
-        if (exc instanceof TokenError) throw new GrantError(`exchange refused: ${exc.message}`);
-        throw exc;
-      }
+      token = await this.#signIn.grant(needed.audience, needed.scope, call.ref);
     } catch (exc) {
-      return exc instanceof GrantError ? failed(exc, approval) : threw("rules", exc, approval);
+      if (exc instanceof TokenError) {
+        return failed(new GrantError(`exchange refused: ${exc.message}`), approval);
+      }
+      return threw("rules", exc, approval);
     }
     let ranTool = false;
     try {

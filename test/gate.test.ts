@@ -404,15 +404,17 @@ test("lifecycle: an approval decided days earlier is used once, signed at the mo
     r.used = true;
     return new ApprovedBy(r.by);
   };
-  // Several approvers for the system: only an ApprovedBy naming one of them counts.
-  world.rules.approversFor = (_r, call) => (call.args.system === "ads" ? [adsOwner] : null);
   world.clock += 3 * 86_400; // three days later, far past a receipt's 120 seconds
   const gate = await world.gate(fromDesk);
   const first = await gate.execute(world.deactivate("ads", "ADS-00002"));
   assert.ok(first.status === "ran" && first.receipt?.approver === ADS_OWNER);
+  const approved = world.audit.records.find((r) => r.event === "write_approved");
+  assert.equal(approved?.requester, LEAD);
+  assert.equal(approved?.ref, "run-0001/ads/ADS-00002/active_account");
   const again = await gate.execute(world.deactivate("ads", "ADS-00002"));
   assert.equal(again.status, "denied");
-  // A plain true from a multi-approver system is not honoured.
+  // With several approvers for the system, a plain true is not honoured.
+  world.rules.approversFor = (_r, call) => (call.args.system === "ads" ? [adsOwner] : null);
   world.accounts.set("ads/ADS-00002", "active");
   const plain = await (await world.gate(async () => true)).execute(
     world.deactivate("ads", "ADS-00002"),
@@ -430,4 +432,70 @@ test("lifecycle: the run's lead can't approve their own run", async () => {
   );
   assert.ok(outcome.status === "refused" && /started this run/.test(outcome.reason));
   assert.deepEqual(approver.proposals, []);
+});
+
+test("ts_i2_a_write_with_no_grant_defined_is_never_put_to_the_approver", async () => {
+  const world = await new LifecycleWorld().setUp();
+  const approver = new RecordingApprover(true);
+  world.rules.approversFor = () => world.owners.get("saas") ?? null;
+  const gate = await world.gate(approver.approve);
+  const outcome = await gate.execute(world.deactivate("payroll", "P-1"));
+  assert.deepEqual(outcome, {
+    status: "failed",
+    approval: "not_asked",
+    reason: "no grant is defined for deactivate_account",
+    errorType: "GrantError",
+  });
+  assert.deepEqual(approver.proposals, []);
+  assert.deepEqual(world.audit.records, []);
+});
+
+test("ts_i2_a_handler_refusal_after_an_approval_fails_closed", async () => {
+  const world = new HelpdeskWorld();
+  const { gate, audit } = await world.gate({
+    approver: async () => {
+      const jamie = world.directory.get(JAMIE);
+      if (jamie) jamie.status = "disabled"; // the requester is disabled while Theo decides
+      return true;
+    },
+  });
+  const outcome = await gate.execute(world.request("reset_mfa", { email: JAMIE }));
+  assert.deepEqual(outcome, {
+    status: "failed",
+    approval: "approved",
+    reason: "grant refused: the requester's account is not active",
+    errorType: "GrantError",
+  });
+  assert.equal(world.directory.get(JAMIE)?.mfaEnrolled, true, "nothing changed");
+  assert.equal(audit.records.filter((r) => r.event === "write_approved").length, 1);
+});
+
+test("ts_t2_gate_honours_only_its_own_approvers_by_the_sign_in_itself", async () => {
+  const world = new HelpdeskWorld();
+  const outsider = await world.issuer.signIn(THEO); // a valid sign-in for Theo, but not the gate's
+  const { gate } = await world.gate({ approver: async () => new ApprovedBy(outsider) });
+  const one = await gate.execute(world.request("reset_mfa", { email: JAMIE }));
+  assert.ok(one.status === "denied" && /no verified approver/.test(one.reason));
+  // The gate's own operator, named: honoured.
+  const own = world.operator;
+  assert.ok(own);
+  const { gate: named } = await world.gate({ approver: async () => new ApprovedBy(own) });
+  world.operator = own;
+  assert.equal((await named.execute(world.request("reset_mfa", { email: JAMIE }))).status, "ran");
+});
+
+test("ts_changing_the_approver_list_while_asked_changes_nothing", async () => {
+  const world = await new LifecycleWorld().setUp();
+  const intruder = await world.issuer.signIn("eve@example.test");
+  const owner = world.owners.get("saas");
+  assert.ok(owner);
+  const list: SignIn[] = [owner];
+  world.rules.approversFor = () => list;
+  const gate = await world.gate(async () => {
+    list.push(intruder);
+    return new ApprovedBy(intruder);
+  });
+  const outcome = await gate.execute(world.deactivate("saas", "SAAS-00008"));
+  assert.equal(outcome.status, "denied");
+  assert.equal(world.accounts.get("saas/SAAS-00008"), "active");
 });

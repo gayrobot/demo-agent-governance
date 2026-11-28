@@ -25,7 +25,14 @@ The gate fixes the order: may the requester ask; the caller's own check; refuse 
 
 What stays in each demo: the allowlist, argument validation, its own policy checks, what a read may show, the audit record of each call and the words the model sees. The gate returns an outcome (`ran`, `refused`, `denied`, `failed`, or `threw` when something the caller supplied threw) and the caller turns it into those.
 
-For the helpdesk's switch-over: its approval rules (`authz.ts`) become its `GateRules`; a few messages change (`another ticket` is now `another ref`, and the gate's own denial reasons are worded generically); and it must pass its clock and a `ReceiptAuthority` in.
+For the helpdesk's switch-over, its adapter must:
+
+- turn its approval rules (`authz.ts`) and tool table into `GateRules`, and its `operator` or `operators` into `approversFor`;
+- rebuild its `Proposal`: `target` and `requesterIsTarget` now travel in `proposal.details` (read in `session.ts` and several tests), and `ApprovedBy.operator` is now `ApprovedBy.approver`;
+- turn each outcome into its `Decision` and audit record, classifying what `threw` (its `PolicyDenied` and `ToolError`);
+- pass its clock and a `ReceiptAuthority` in.
+
+Messages that change: `another ticket` is now `another ref`; the gate's own denial reasons are worded generically (`the approver did not approve` instead of `operator did not type y`); and the approval record gains `ref`. One behaviour widens: with a single operator, an `ApprovedBy` naming that same sign-in is now honoured (no helpdesk test asserts otherwise).
 
 ## Using it
 

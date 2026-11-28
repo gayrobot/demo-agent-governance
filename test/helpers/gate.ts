@@ -233,12 +233,14 @@ export class LifecycleWorld {
     };
   }
 
+  audit = new MemoryAudit(() => FIXED_DATE);
+
   async gate(approver: Approver) {
     return new ApprovalGate({
       signIn: await this.issuer.signIn(LEAD),
       rules: this.rules,
       approver,
-      audit: new MemoryAudit(() => FIXED_DATE),
+      audit: this.audit,
       receipts: new ReceiptAuthority(() => this.clock),
     });
   }
