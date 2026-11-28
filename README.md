@@ -11,17 +11,28 @@ Savory Air is a fictional company. Everything here is synthetic.
 
 ## Status
 
-The harness only: safety rules, CI, guard tests, and the first helper. The modules arrive by PR, as copies from `helpdesk-agent/web/src` at `dc26b4e`, with their tests:
+Every module has arrived, copied from `helpdesk-agent/web/src` at `dc26b4e` with its tests. Neither demo uses this repo yet: the lifecycle demo adopts it at its L4, and the helpdesk switches over in its own PR.
 
-| Module | What changes on the way |
+| Module | What changed on the way |
 | --- | --- |
-| `audit.ts` | Uses `text.ts` instead of the helpdesk's Python-compatibility helpers; the clock becomes required |
-| `receipts.ts` | A receipt names a subject the caller defines; the clock becomes required |
-| `identity.ts` | Issuer, client id and the table of resources and scopes become configuration; clocks become required |
-| `delegation.ts` | The caller maps each call to its audience and scope |
-| The approval gate from `governance.ts` | A seam where the caller supplies who may request, who may approve and which grant a call needs |
+| `audit.ts` | Uses `text.ts` instead of the helpdesk's Python-compatibility helpers; the clock is required |
+| `receipts.ts` | A receipt names a `ref` the caller defines (a ticket, or a run and a finding); the clock is required |
+| `identity.ts` | Issuer, client id and the table of resources and scopes are configuration; clocks are required |
+| `delegation.ts` | No fixed table of tools: the caller maps each call to its audience and scope, from the exact arguments about to run. The "requester's account is still active" check is the caller's too |
+| `gate.ts`, the approval flow from `governance.ts` | A seam (`GateRules`) where the caller says who may request, who answers each call, whether they may approve, and which grant a call needs. Approvers and the ref come per call. The receipt authority is passed in |
 
-The helpdesk's token and receipt attack tests come with them and must pass before either demo uses this repo.
+The gate fixes the order: may the requester ask; the caller's own check; refuse before asking if no approver for this call may approve; ask, with a frozen deep copy of the arguments; honour only a signed-in approver for this call who still passes the rules; sign the receipt and record the approval before acting; mint a fresh grant for exactly this call, which the handler side checks before the tool runs.
+
+What stays in each demo: the allowlist, argument validation, its own policy checks, what a read may show, the audit record of each call and the words the model sees. The gate returns an outcome (`ran`, `refused`, `denied`, `failed`, or `threw` when something the caller supplied threw) and the caller turns it into those.
+
+For the helpdesk's switch-over, its adapter must:
+
+- turn its approval rules (`authz.ts`) and tool table into `GateRules`, and its `operator` or `operators` into `approversFor`;
+- rebuild its `Proposal`: `target` and `requesterIsTarget` now travel in `proposal.details` (read in `session.ts` and several tests), and `ApprovedBy.operator` is now `ApprovedBy.approver`;
+- turn each outcome into its `Decision` and audit record, classifying what `threw` (its `PolicyDenied` and `ToolError`);
+- pass its clock and a `ReceiptAuthority` in.
+
+Messages that change: `another ticket` is now `another ref`; the gate's own denial reasons are worded generically (`the approver did not approve` instead of `operator did not type y`); and the approval record gains `ref`. One behaviour widens: with a single operator, an `ApprovedBy` naming that same sign-in is now honoured (no helpdesk test asserts otherwise).
 
 ## Using it
 
